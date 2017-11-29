@@ -23,8 +23,13 @@ import time
 import Adafruit_GPIO as GPIO
 import Adafruit_GPIO.I2C as I2C
 import Adafruit_GPIO.MCP230xx as MCP
+import Adafruit_GPIO.PCF8574 as PCF
 import Adafruit_GPIO.PWM as PWM
 
+
+# Backpack devices
+BACKPACK_MCP23008       = 0
+BACKPACK_PCF8574        = 1
 
 # Commands
 LCD_CLEARDISPLAY        = 0x01
@@ -94,6 +99,66 @@ LCD_BACKPACK_D5         = 4
 LCD_BACKPACK_D6         = 5
 LCD_BACKPACK_D7         = 6
 LCD_BACKPACK_LITE       = 7
+
+# From https://github.com/bgewehr/Gartenwasser/blob/master/LCD_BACKPACK_CharLCD.py
+#
+# Char LCD pin to I/O extender GPIO pin number maps
+# PCF8574 pins 4-7,9-12 are bits 0-3,4-7, respectively
+# LCD pin name: PCF port bit
+PCF8574_BACKPACK_PINMAPS = [
+    {
+        # map0 - DFRobot, YwRobot, Sainsmart?, also generic black PCB
+        # http://dfrobot.com/image/data/DFR0175/I2C%20LCD%20Backpack%20schematic.pdf
+        'LCD_BACKPACK_RS':   0,
+        'LCD_BACKPACK_RW':   1,
+        'LCD_BACKPACK_EN':   2,
+        'LCD_BACKPACK_LITE': 3,
+        'LCD_BACKPACK_D4':   4,
+        'LCD_BACKPACK_D5':   5,
+        'LCD_BACKPACK_D6':   6,
+        'LCD_BACKPACK_D7':   7,
+    }, {
+        # map1 - map0 with nibbles swapped
+        'LCD_BACKPACK_RS':   4,
+        'LCD_BACKPACK_RW':   5,
+        'LCD_BACKPACK_EN':   6,
+        'LCD_BACKPACK_LITE': 7,
+        'LCD_BACKPACK_D4':   0,
+        'LCD_BACKPACK_D5':   1,
+        'LCD_BACKPACK_D6':   2,
+        'LCD_BACKPACK_D7':   3,
+    }, {
+        # map2 - mjkdz board w/22 turn trimmer, GY-LCD-V1
+        'LCD_BACKPACK_RS':   6,
+        'LCD_BACKPACK_RW':   5,
+        'LCD_BACKPACK_EN':   4,
+        'LCD_BACKPACK_LITE': 7,
+        'LCD_BACKPACK_D4':   0,
+        'LCD_BACKPACK_D5':   1,
+        'LCD_BACKPACK_D6':   2,
+        'LCD_BACKPACK_D7':   3,
+    }, {
+        # map3 - map2 with nibbles swapped
+        'LCD_BACKPACK_RS':   0,
+        'LCD_BACKPACK_RW':   1,
+        'LCD_BACKPACK_EN':   2,
+        'LCD_BACKPACK_LITE': 3,
+        'LCD_BACKPACK_D4':   6,
+        'LCD_BACKPACK_D5':   5,
+        'LCD_BACKPACK_D6':   4,
+        'LCD_BACKPACK_D7':   7,
+    }, {
+        # map4 - ???
+        'LCD_BACKPACK_RS':   4,
+        'LCD_BACKPACK_RW':   5,
+        'LCD_BACKPACK_EN':   6,
+        'LCD_BACKPACK_LITE': 7,
+        'LCD_BACKPACK_D4':   2,
+        'LCD_BACKPACK_D5':   1,
+        'LCD_BACKPACK_D6':   0,
+        'LCD_BACKPACK_D7':   3,
+    },
+]
 
 class Adafruit_CharLCD(object):
     """Class to represent and interact with an HD44780 character LCD display."""
@@ -461,17 +526,60 @@ class Adafruit_CharLCDPlate(Adafruit_RGBCharLCD):
 
 class Adafruit_CharLCDBackpack(Adafruit_CharLCD):
     """Class to represent and interact with an Adafruit I2C / SPI
-    LCD backpack using I2C."""
+    LCD backpack using I2C. Additionally, generic LCD backpacks
+    based on the PCF8574 I2C I/O expander are also supported"""
     
-    def __init__(self, address=0x20, busnum=I2C.get_default_bus(), cols=16, lines=2):
+    def __init__(self, backpack_device=BACKPACK_MCP23008, address=None,
+                 busnum=I2C.get_default_bus(), cols=16, lines=2, pinmap=0):
         """Initialize the character LCD plate.  Can optionally specify a separate
         I2C address or bus number, but the defaults should suffice for most needs.
         Can also optionally specify the number of columns and lines on the LCD
-        (default is 16x2).
+        (default is 16x2). The Adafruit character LCD backpack comes with a
+        MCP23008 I2C I/O expander, but another popular one is the PCF8574.
+        The backpack_device argument enables using either, with MCP23008
+        being the default.
         """
-        # Configure the MCP23008 device.
-        self._mcp = MCP.MCP23008(address=address, busnum=busnum)
+        self._initBackpack(backpack_device, address, busnum, pinmap)
         # Initialize LCD (with no PWM support).
         super(Adafruit_CharLCDBackpack, self).__init__(LCD_BACKPACK_RS, LCD_BACKPACK_EN,
             LCD_BACKPACK_D4, LCD_BACKPACK_D5, LCD_BACKPACK_D6, LCD_BACKPACK_D7,
-            cols, lines, LCD_BACKPACK_LITE, enable_pwm=False, gpio=self._mcp)
+            cols, lines, LCD_BACKPACK_LITE, invert_polarity=False, enable_pwm=False, gpio=self._gpio)
+
+    def _initBackpack(self, backpack_device, address, busnum, pinmap):
+        if backpack_device == BACKPACK_MCP23008:
+
+            if address is None:
+                address = 0x20
+
+            # Configure the MCP23008 device.
+            self._gpio = MCP.MCP23008(address=address, busnum=busnum)
+
+        elif backpack_device == BACKPACK_PCF8574:
+
+            if address is None:
+                address = 0x27
+
+            # Char LCD backpack GPIO numbers.
+            self._storepinmap(pinmap)
+
+            # Configure the PCF8574 device.
+            self._gpio = PCF.PCF8574(address=address, busnum=busnum)
+
+            # Set LCD R/W pin to low for writing only.
+            self._gpio.setup(LCD_BACKPACK_RW, GPIO.OUT)
+            self._gpio.output(LCD_BACKPACK_RW, GPIO.LOW)
+
+    def _storepinmap(self, pinmap):
+        """The PCF8574-based backpacks come in multiple pin mapping
+        arrangements to assign chip I/O lines to the LCDs data and control
+        lines. This module defines all known mappings and sets the default
+        to the most common map (0). This function assigns pin numbers of
+        the given mapping to the LCD line variables required for
+        initialization."""
+        try:
+            m = PCF8574_BACKPACK_PINMAPS[int(pinmap)]
+        except TypeError:
+            m = pinmap
+        validkeys = PCF8574_BACKPACK_PINMAPS[0].keys()
+        globals().update(
+            dict((k, v) for k, v in m.iteritems() if k in validkeys))
